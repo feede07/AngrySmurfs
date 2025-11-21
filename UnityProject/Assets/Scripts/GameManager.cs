@@ -1,20 +1,23 @@
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.InputSystem;
+using System.Collections;
 
 public class GameManager : MonoBehaviour
 {
     [Header("Round Settings")]
     public int totalRounds = 3;
-    public float[] roundDurations = { 40f, 35f, 30f }; // Duración por ronda
-    public int[] smurfsPerRound = { 5, 8, 12 }; // Pitufos por ronda
+    public float[] roundDurations = { 40f, 35f, 30f };
+    public int[] smurfsPerRound = { 5, 8, 12 };
     
     [Header("References")]
     public ARPlaneManager planeManager;
     public SpawnManager spawnManager;
+    public SlingshotController slingshotController;
+    public UIManager uiManager;
     
     [Header("Testing")]
-    public bool autoStartForTesting = true;
+    public bool skipMainMenu = false; // Para testing rápido
     public float autoStartDelay = 2f;
     
     // Estado del juego
@@ -24,11 +27,12 @@ public class GameManager : MonoBehaviour
     private int totalSmurfsThisRound = 0;
     private bool gameStarted = false;
     private bool roundInProgress = false;
-    private GameState currentState = GameState.WaitingToStart;
+    private GameState currentState = GameState.MainMenu;
 
-    private enum GameState
+    public enum GameState
     {
-        WaitingToStart,
+        MainMenu,
+        Countdown,
         RoundInProgress,
         RoundComplete,
         Victory,
@@ -42,109 +46,191 @@ public class GameManager : MonoBehaviour
             planeManager.trackablesChanged.AddListener(OnTrackablesChanged);
         }
         
-        // Para testing: auto-iniciar el juego
-        if (autoStartForTesting)
+        // Deshabilitar disparo al inicio
+        if (slingshotController != null)
         {
-            Invoke("ForceStartGame", autoStartDelay);
+            slingshotController.SetCanShoot(false);
+        }
+        
+        // Ocultar HUD al inicio
+        if (uiManager != null)
+        {
+            uiManager.HideHUD();
+            uiManager.ShowMainMenu();
+        }
+        
+        // Testing: skip main menu
+        if (skipMainMenu)
+        {
+            Invoke("OnPlayButtonPressed", autoStartDelay);
         }
     }
 
     void OnTrackablesChanged(ARTrackablesChangedEventArgs<ARPlane> args)
     {
-        if (!gameStarted && args.added.Count > 0)
+        if (!gameStarted && args.added.Count > 0 && skipMainMenu)
         {
-            gameStarted = true;
-            StartNewGame();
-            Debug.Log("Plano AR detectado! Iniciando juego...");
+            OnPlayButtonPressed();
         }
     }
 
-    void ForceStartGame()
+    // Llamado por el botón PLAY del main menu
+    public void OnPlayButtonPressed()
     {
-        if (!gameStarted)
+        if (currentState != GameState.MainMenu) return;
+        
+        Debug.Log("=== INICIANDO NUEVO JUEGO ===");
+        
+        if (uiManager != null)
         {
-            Debug.Log("=== AUTO-INICIANDO JUEGO PARA TESTING ===");
-            gameStarted = true;
-            StartNewGame();
+            uiManager.HideMainMenu();
         }
+        
+        gameStarted = true;
+        StartNewGame();
     }
 
     void StartNewGame()
     {
         currentRound = 0;
-        currentState = GameState.WaitingToStart;
+        currentState = GameState.Countdown;
+        
         Debug.Log("=== NUEVO JUEGO ===");
         StartNextRound();
     }
 
     void StartNextRound()
-{
-    if (currentRound >= totalRounds)
     {
-        Victory();
-        return;
-    }
+        if (currentRound >= totalRounds)
+        {
+            Victory();
+            return;
+        }
 
-    // AÑADIR: Limpiar pitufos de la ronda anterior
-    spawnManager.ClearAllSmurfs();
+        // Limpiar pitufos de la ronda anterior
+        spawnManager.ClearAllSmurfs();
 
-    currentRound++;
-    smurfsPainted = 0;
-    totalSmurfsThisRound = smurfsPerRound[currentRound - 1];
-    timeRemaining = roundDurations[currentRound - 1];
-    roundInProgress = true;
-    currentState = GameState.RoundInProgress;
-
-    Debug.Log($"=== RONDA {currentRound}/{totalRounds} ===");
-    Debug.Log($"Pitufos a pintar: {totalSmurfsThisRound}");
-    Debug.Log($"Tiempo: {timeRemaining} segundos");
-
-    // Spawnear pitufos
-    if (Camera.main != null)
-    {
-        Vector3 spawnCenter = Camera.main.transform.position + Camera.main.transform.forward * 3f;
-        spawnCenter.y = 0f; // Spawn en el suelo
+        currentRound++;
+        smurfsPainted = 0;
+        totalSmurfsThisRound = smurfsPerRound[currentRound - 1];
+        timeRemaining = roundDurations[currentRound - 1];
         
-        spawnManager.SpawnSmurfsForRound(spawnCenter, totalSmurfsThisRound);
-    }
-    else
-    {
-        Debug.LogError("No se encontró Camera.main!");
+        // Inicializar munición para esta ronda
+        if (slingshotController != null)
+        {
+            slingshotController.InitializeAmmoForRound(currentRound);
+            slingshotController.SetCanShoot(false); // No disparar durante countdown
+        }
+
+        Debug.Log($"=== PREPARANDO RONDA {currentRound}/{totalRounds} ===");
+        Debug.Log($"Pitufos a pintar: {totalSmurfsThisRound}");
+        Debug.Log($"Tiempo: {timeRemaining} segundos");
+
+        // Mostrar countdown antes de empezar la ronda
+        StartCoroutine(RoundCountdown());
     }
 
-    // Placeholder: Aquí iría la UI de inicio de ronda
-    ShowRoundStartUI();
-}
+    IEnumerator RoundCountdown()
+    {
+        currentState = GameState.Countdown;
+        
+        // Spawnear pitufos pero sin permitir disparar
+        Vector3 spawnCenter = GetSpawnCenter();
+        spawnManager.SpawnSmurfsForRound(spawnCenter, totalSmurfsThisRound);
+        
+        // Mostrar HUD
+        if (uiManager != null)
+        {
+            uiManager.ShowHUD();
+        }
+        
+        // Countdown 3, 2, 1, GO
+        if (uiManager != null)
+        {
+            uiManager.ShowCountdown("3");
+            yield return new WaitForSeconds(1f);
+            
+            uiManager.ShowCountdown("2");
+            yield return new WaitForSeconds(1f);
+            
+            uiManager.ShowCountdown("1");
+            yield return new WaitForSeconds(1f);
+            
+            uiManager.ShowCountdown("GO!");
+            yield return new WaitForSeconds(0.5f);
+            
+            uiManager.HideCountdown();
+        }
+        else
+        {
+            yield return new WaitForSeconds(3f);
+        }
+        
+        // Iniciar la ronda
+        BeginRound();
+    }
+
+    void BeginRound()
+    {
+        roundInProgress = true;
+        currentState = GameState.RoundInProgress;
+        
+        // Permitir disparar
+        if (slingshotController != null)
+        {
+            slingshotController.SetCanShoot(true);
+        }
+        
+        Debug.Log($"=== ¡RONDA {currentRound} INICIADA! ===");
+    }
+
+    Vector3 GetSpawnCenter()
+    {
+        if (Camera.main != null)
+        {
+            Vector3 center = Camera.main.transform.position + Camera.main.transform.forward * 3f;
+            center.y = 0f;
+            return center;
+        }
+        return Vector3.zero;
+    }
 
     void Update()
-{
-    if (currentState != GameState.RoundInProgress) return;
-
-    // Countdown del timer
-    timeRemaining -= Time.deltaTime;
-    
-    // Game Over si se acaba el tiempo
-    if (timeRemaining <= 0)
     {
-        GameOver();
-    }
+        if (currentState != GameState.RoundInProgress) return;
 
-    // Debug: presiona Space para ver info (nuevo Input System)
-    if (Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame)
-    {
-        Debug.Log($"Ronda {currentRound} | Tiempo: {timeRemaining:F1}s | Pintados: {smurfsPainted}/{totalSmurfsThisRound}");
+        // Countdown del timer
+        timeRemaining -= Time.deltaTime;
+        
+        // Game Over si se acaba el tiempo
+        if (timeRemaining <= 0)
+        {
+            GameOver("¡Se acabó el tiempo!");
+        }
+
+        // Debug
+        if (Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame)
+        {
+            Debug.Log($"Ronda {currentRound} | Tiempo: {timeRemaining:F1}s | Pintados: {smurfsPainted}/{totalSmurfsThisRound}");
+        }
     }
-}
 
     public void SmurfPainted()
     {
         smurfsPainted++;
         Debug.Log($"¡Pitufo pintado! ({smurfsPainted}/{totalSmurfsThisRound})");
         
-        // Comprobar si se completó la ronda
         if (smurfsPainted >= totalSmurfsThisRound)
         {
             RoundComplete();
+        }
+    }
+
+    public void OnAmmoEmpty()
+    {
+        if (smurfsPainted < totalSmurfsThisRound)
+        {
+            GameOver("¡Te quedaste sin tomates!");
         }
     }
 
@@ -153,14 +239,37 @@ public class GameManager : MonoBehaviour
         roundInProgress = false;
         currentState = GameState.RoundComplete;
         
+        // Deshabilitar disparo
+        if (slingshotController != null)
+        {
+            slingshotController.SetCanShoot(false);
+        }
+        
         Debug.Log($"=== ¡RONDA {currentRound} COMPLETADA! ===");
-        Debug.Log($"Tiempo restante: {timeRemaining:F1} segundos");
+        
+        // Mostrar panel de ronda completada
+        StartCoroutine(ShowRoundCompleteSequence());
+    }
 
-        // Placeholder: Aquí iría la UI de ronda completada
-        ShowRoundCompleteUI();
-
-        // Esperar 2 segundos antes de la siguiente ronda
-        Invoke("StartNextRound", 2f);
+    IEnumerator ShowRoundCompleteSequence()
+    {
+        if (uiManager != null)
+        {
+            int nextRound = currentRound + 1;
+            if (nextRound <= totalRounds)
+            {
+                uiManager.ShowRoundComplete(currentRound, nextRound);
+            }
+        }
+        
+        yield return new WaitForSeconds(3f);
+        
+        if (uiManager != null)
+        {
+            uiManager.HideRoundComplete();
+        }
+        
+        StartNextRound();
     }
 
     void Victory()
@@ -168,80 +277,96 @@ public class GameManager : MonoBehaviour
         currentState = GameState.Victory;
         roundInProgress = false;
         
+        // Deshabilitar disparo
+        if (slingshotController != null)
+        {
+            slingshotController.SetCanShoot(false);
+        }
+        
         Debug.Log("=================================");
         Debug.Log("========== ¡VICTORIA! ===========");
-        Debug.Log("=== ¡HAS COMPLETADO EL JUEGO! ===");
         Debug.Log("=================================");
 
-        // Placeholder: Aquí iría la UI de victoria
-        ShowVictoryUI();
+        if (uiManager != null)
+        {
+            uiManager.HideHUD();
+            uiManager.ShowVictory();
+        }
     }
 
-    void GameOver()
+    void GameOver(string reason)
     {
         currentState = GameState.GameOver;
         roundInProgress = false;
         timeRemaining = 0;
         
+        // Deshabilitar disparo
+        if (slingshotController != null)
+        {
+            slingshotController.SetCanShoot(false);
+        }
+        
         Debug.Log("=================================");
         Debug.Log("========== GAME OVER ===========");
+        Debug.Log($"Razón: {reason}");
         Debug.Log($"Llegaste hasta la Ronda {currentRound}");
-        Debug.Log($"Pitufos pintados: {smurfsPainted}/{totalSmurfsThisRound}");
         Debug.Log("=================================");
 
-        // Placeholder: Aquí iría la UI de Game Over
-        ShowGameOverUI();
+        if (uiManager != null)
+        {
+            uiManager.HideHUD();
+            uiManager.ShowGameOver(reason, currentRound);
+        }
     }
 
-    // === PLACEHOLDERS PARA UI ===
-    void ShowRoundStartUI()
-    {
-        // TODO: Mostrar UI "Ronda X - ¡Empieza!"
-        Debug.Log($"[UI PLACEHOLDER] Mostrando inicio Ronda {currentRound}");
-    }
-
-    void ShowRoundCompleteUI()
-    {
-        // TODO: Mostrar UI "¡Ronda Completada!"
-        Debug.Log("[UI PLACEHOLDER] Mostrando ronda completada");
-    }
-
-    void ShowVictoryUI()
-    {
-        // TODO: Mostrar UI Victoria con botones: Volver a Jugar / Menú Principal
-        Debug.Log("[UI PLACEHOLDER] Mostrando pantalla de Victoria");
-    }
-
-    void ShowGameOverUI()
-    {
-        // TODO: Mostrar UI Game Over con botones: Volver a Jugar / Menú Principal
-        Debug.Log("[UI PLACEHOLDER] Mostrando pantalla de Game Over");
-    }
-
-    // === MÉTODOS PÚBLICOS PARA UI (para cuando implementes los botones) ===
+    // === BOTONES UI ===
     public void RestartGame()
     {
         Debug.Log("Reiniciando juego...");
-        // Limpiar pitufos actuales
+        
+        // Limpiar escena
         spawnManager.ClearAllSmurfs();
-        // Reiniciar juego
+        
+        // Ocultar todos los paneles
+        if (uiManager != null)
+        {
+            uiManager.HideGameOver();
+            uiManager.HideVictory();
+        }
+        
+        // Reiniciar
+        gameStarted = false;
         StartNewGame();
     }
 
     public void GoToMainMenu()
     {
         Debug.Log("Volviendo al menú principal...");
-        // TODO: Cargar escena del menú principal
-        // SceneManager.LoadScene("MainMenu");
+        
+        // Limpiar escena
+        spawnManager.ClearAllSmurfs();
+        
+        // Resetear estado
+        gameStarted = false;
+        currentState = GameState.MainMenu;
+        
+        // Mostrar main menu
+        if (uiManager != null)
+        {
+            uiManager.HideGameOver();
+            uiManager.HideVictory();
+            uiManager.HideHUD();
+            uiManager.ShowMainMenu();
+        }
     }
 
-    // === GETTERS para UI ===
+    // === GETTERS ===
     public int GetCurrentRound() => currentRound;
     public int GetTotalRounds() => totalRounds;
     public float GetTimeRemaining() => timeRemaining;
     public int GetSmurfsPainted() => smurfsPainted;
     public int GetTotalSmurfsThisRound() => totalSmurfsThisRound;
-    //public GameState GetCurrentState() => currentState;
+    public GameState GetCurrentState() => currentState;
 
     void OnDestroy()
     {

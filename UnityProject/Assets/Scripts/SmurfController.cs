@@ -118,6 +118,7 @@ public class SmurfController : MonoBehaviour
         }
     }
 
+    [System.Obsolete]
     public void PaintRed()
     {
         if (isPainted) return;
